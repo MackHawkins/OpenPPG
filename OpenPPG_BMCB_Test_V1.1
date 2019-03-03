@@ -1,0 +1,255 @@
+/*
+ * OpenPPG Battery Monitor Communication Board V1.1
+ * Test Code V1.1
+ * Mack Hawkins
+ * 3-1-2019
+ */
+#include <Wire.h>
+#include <FastLED.h>
+
+#define DATA_PIN 2
+#define NUM_LEDS 3
+#define IOEX_1 0x20
+#define IOEX_2 0x24
+#define Fan_Controller 0x50
+#define P1_Temp_Sense 0x60
+#define P2_Temp_Sense 0x67
+#define P1_ADC 0x1D
+#define P2_ADC 0x1F
+#define Amp_Temp_Sense 0x4A
+CRGB leds[NUM_LEDS];
+uint8_t gHue = 0; // rotating "base color" used by many of the patterns
+
+void setup()
+{
+  delay( 3000 ); // power-up safety delay
+  Wire.begin();
+  Serial.begin(9600);
+  while (!Serial);
+  FastLED.addLeds<WS2812, DATA_PIN, RGB>(leds, NUM_LEDS);
+  init_IOEX_1();
+  init_IOEX_2();
+  init_Fan_Controller();
+  Write_IOEX_1(0x10); // Inhibit external I2C on boot-up
+  Write_IOEX_2(0x10); // All connected devices off on boot-up
+}
+
+byte counter1 = 0;
+byte counter2 = 0;
+void loop()
+{
+  fill_rainbow( leds, NUM_LEDS, gHue++, 7);  
+  FastLED.show();
+  Point_I2C(counter1);
+  counter1++;
+  Write_IOEX_2(0x10 | 0x20);
+  delay(10);
+  I2C_SCANNER();
+  delay(10);
+  Set_Fan_PWM(5*(counter2++));
+  delay(200);
+  for (int i = 0; i <= 100; i++) {
+    Write_IOEX_2(0x80 | 0x10);
+    delay(1);
+    Write_IOEX_2(0x10);
+  }
+  if(counter1>4)
+    counter1=1;
+  if(counter2>50)
+    counter2=0;
+}
+
+//***************** FUNCTIONS *****************//
+
+void init_IOEX_1(void){
+  // Initialize the second IO expander
+  // All ports are set to outputs
+  Wire.beginTransmission(IOEX_1); // being transmission to IO expander 2
+  Wire.write(0x03);       // Wire to the control register
+  Wire.write(0x8F);       // Set P4, P5, & P6 as outputs
+  Wire.endTransmission(); // Send stop condition
+}
+
+void init_IOEX_2(void){
+  // Initialize the second IO expander
+  // All ports are set to outputs
+  Wire.beginTransmission(IOEX_2); // being transmission to IO expander 2
+  Wire.write(0x03);       // Wire to the control register
+  Wire.write(0x00);       // Set all ports as outputs
+  Wire.endTransmission(); // Send stop condition
+}
+
+void init_Fan_Controller(void){
+  Wire.beginTransmission(Fan_Controller);
+  Wire.write(0x00);   // Control Register 1
+  Wire.write(0x00); // Default
+  //Wire.write(0x80);
+  Wire.endTransmission();
+  delay(10);
+  
+  Wire.beginTransmission(Fan_Controller);
+  Wire.write(0x01);   // Control Register 2
+  //Wire.write(0x10); // Default
+  Wire.write(0x11);
+  Wire.endTransmission();
+  delay(10);
+  
+  Wire.beginTransmission(Fan_Controller);
+  Wire.write(0x02);   // Control Register 3
+  //Wire.write(0x03);  // Default
+  Wire.write(0x08);
+  Wire.endTransmission();
+  delay(10);
+//
+//  Wire.beginTransmission(Fan_Controller);
+//  Wire.write(0x03);   //  Fan Fault Duty Cycle (FFDC)
+//  Wire.write(0x0F);
+//  Wire.endTransmission();
+//  delay(10);
+//
+//  Wire.beginTransmission(Fan_Controller);
+//  Wire.write(0x04);   //   Alert Mask Register (MASK)
+//  Wire.write(0xFF);
+//  Wire.endTransmission();
+//  delay(10);
+//
+//  Wire.beginTransmission(Fan_Controller);
+//  Wire.write(0x50);   // Direct Duty-Cycle Control Register
+//  Wire.write(0x0F);   // Set initial duy cycle to 0%
+//  Wire.endTransmission();
+//  delay(10);
+//
+//  Wire.beginTransmission(Fan_Controller);
+//  Wire.write(0x51);   //  Current PWM Duty-Cycle Register (PWMV)
+//  Wire.write(0x0F);   // Set initial duy cycle to 0%
+//  Wire.endTransmission();
+//  delay(10);
+}
+
+
+void Write_IOEX_2(byte mask){
+  // Set the output port bits of the second IO expander
+  // P0 - Turn On 4
+  // P1 - Turn On 1
+  // P2 - Turn On 3
+  // P3 - Turn On 2
+  // P4 - Turn On 1
+  // P5 - !RS485 Receiver Enable!
+  // P6 - RS485 Driver Enable
+  // P7 - Speaker On
+  Wire.beginTransmission(IOEX_2); // being transmission to IO expander 2
+  Wire.write(0x01);       // Wire to the output port register
+  Wire.write(mask);       // Set ports to mask
+  Wire.endTransmission(); // Send stop condition
+}
+
+void Write_IOEX_1(byte mask){
+  // Set the output port bits of the second IO expander
+  // P0 - Null
+  // P1 - Null
+  // P2 - Null
+  // P3 - Null
+  // P4 - I2C Mux Inhibit
+  // P5 - I2C Mux bit A
+  // P6 - I2C Mux bit B
+  // P7 - Null
+  mask = mask & 0x70;
+  Wire.beginTransmission(IOEX_1); // being transmission to IO expander 2
+  Wire.write(0x01);       // Wire to the output port register
+  Wire.write(mask);       // Set ports to mask
+  Wire.endTransmission(); // Send stop condition
+}
+
+void Local_I2C_Only(void){
+  Write_IOEX_2(0x10);
+}
+
+void Point_I2C(byte Point){
+  // Tell the mux which external I2C board to communicate with
+  // Point is a value between 1 and 4
+  byte I2C_Board_Pointer = 0;
+  if (Point == 1)
+    I2C_Board_Pointer = 0x00;
+  else if (Point == 2)
+    I2C_Board_Pointer = 0x40;
+  else if (Point == 3)
+    I2C_Board_Pointer = 0x20;
+  else if (Point == 4)
+    I2C_Board_Pointer = 0x60;
+  Wire.beginTransmission(IOEX_1); // being transmission to IO expander 2
+  Wire.write(0x01);       // Wire to the output port register
+  Wire.write(I2C_Board_Pointer);       // Set ports to Point
+  Wire.endTransmission(); // Send stop condition
+}
+
+void Set_Fan_PWM(byte Speed){
+//  Wire.beginTransmission(Fan_Controller);
+//  Wire.write(0x01);   // Control Register 2
+//  Wire.write(Speed);
+//  Wire.endTransmission();
+//  delay(1);
+  
+  Wire.beginTransmission(Fan_Controller);
+  Wire.write(0x50);   // Direct Duty-Cycle Control Register
+  Wire.write(Speed);   // Set initial duy cycle to 0%
+  Wire.endTransmission();
+  delay(1);
+  
+//  Wire.beginTransmission(Fan_Controller);
+//  Wire.write(0x51);   //  Current PWM Duty-Cycle Register (PWMV)
+//  Wire.write(Speed);   // Set initial duy cycle to 0%
+//  Wire.endTransmission();
+//  delay(1);
+}
+
+byte Read_Fan_Status(void){
+  byte Fan_Status;
+  Wire.beginTransmission(Fan_Controller);
+  Wire.write(0x5A);   // Status Register (SR)
+  Wire.endTransmission(false); // Repeated Start
+  Wire.requestFrom(Fan_Controller,1);
+  while (Wire.available()) {
+    Fan_Status = Wire.read(); 
+  }  
+  Wire.endTransmission();
+  return Fan_Status;  
+}
+
+void I2C_SCANNER(void){
+  byte error, address;
+  int nDevices;
+ 
+  Serial.println("Scanning...");
+ 
+  nDevices = 0;
+  for(address = 1; address < 127; address++ )
+  {
+    // The i2c_scanner uses the return value of
+    // the Write.endTransmisstion to see if
+    // a device did acknowledge to the address.
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+ 
+    if (error == 0)
+    {
+      Serial.print("I2C device found at address 0x");
+      if (address<16)
+        Serial.print("0");
+      Serial.print(address,HEX);
+      Serial.println("  !");
+ 
+      nDevices++;
+    }
+    else if (error==4)
+    {
+      Serial.print("Unknown error at address 0x");
+      if (address<16)
+        Serial.print("0");
+      Serial.println(address,HEX);
+    }    
+  }
+  if (nDevices == 0)
+    Serial.println("No I2C devices found\n");
+  else
+    Serial.println("done\n");
+}
